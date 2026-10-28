@@ -1,12 +1,14 @@
 use crate::frame::*;
 
+use bytes::BufMut;
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct Priority {
     stream_id: StreamId,
     dependency: StreamDependency,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct StreamDependency {
     /// The ID of the stream dependency target
     dependency_id: StreamId,
@@ -68,5 +70,15 @@ impl StreamDependency {
 
     pub fn dependency_id(&self) -> StreamId {
         self.dependency_id
+    }
+
+    /// Write the 5-byte priority block: E bit + stream dependency, then weight
+    pub fn encode<T: BufMut>(&self, dst: &mut T) {
+        let mut dependency_id = u32::from(self.dependency_id);
+        if self.is_exclusive {
+            dependency_id |= 1 << 31;
+        }
+        dst.put_u32(dependency_id);
+        dst.put_u8(self.weight);
     }
 }

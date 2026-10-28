@@ -1505,6 +1505,9 @@ where
                                 .builder
                                 .local_max_error_reset_streams,
                             settings: self.builder.settings.clone(),
+                            // Request options only apply to clients
+                            request_pseudo_authority_first: false,
+                            request_headers_priority: None,
                         },
                     );
 

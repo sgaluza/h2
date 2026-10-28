@@ -32,6 +32,9 @@ pub struct Headers {
 
     /// The associated flags
     flags: HeadersFlag,
+
+    /// Encode :authority before :scheme (Chrome order), only affects sending
+    pseudo_authority_first: bool,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -84,6 +87,9 @@ pub struct Iter {
 
     /// Header fields
     fields: header::IntoIter<HeaderValue>,
+
+    /// Yield :authority before :scheme
+    authority_first: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -128,6 +134,7 @@ impl Headers {
                 pseudo,
             },
             flags: HeadersFlag::default(),
+            pseudo_authority_first: false,
         }
     }
 
@@ -145,6 +152,7 @@ impl Headers {
                 pseudo: Pseudo::default(),
             },
             flags,
+            pseudo_authority_first: false,
         }
     }
 
@@ -210,6 +218,7 @@ impl Headers {
                 pseudo: Pseudo::default(),
             },
             flags,
+            pseudo_authority_first: false,
         };
 
         Ok((headers, src))
@@ -242,6 +251,17 @@ impl Headers {
 
     pub fn set_end_stream(&mut self) {
         self.flags.set_end_stream()
+    }
+
+    /// Encode request pseudo headers as :method, :authority, :scheme, :path
+    pub fn set_pseudo_authority_first(&mut self) {
+        self.pseudo_authority_first = true;
+    }
+
+    /// Send the stream dependency in this frame and set the PRIORITY flag
+    pub fn set_stream_dependency(&mut self, stream_dep: StreamDependency) {
+        self.stream_dep = Some(stream_dep);
+        self.flags.set_priority();
     }
 
     pub fn is_over_size(&self) -> bool {
@@ -284,10 +304,16 @@ impl Headers {
 
         // Get the HEADERS frame head
         let head = self.head();
+        let stream_dep = self.stream_dep;
 
         self.header_block
-            .into_encoding(encoder)
-            .encode(&head, dst, |_| {})
+            .into_encoding(encoder, self.pseudo_authority_first)
+            .encode(&head, dst, |dst| {
+                // The priority block goes before the header block fragment
+                if let Some(dep) = stream_dep {
+                    dep.encode(dst);
+                }
+            })
     }
 
     fn head(&self) -> Head {
@@ -507,7 +533,7 @@ impl PushPromise {
         let promised_id = self.promised_id;
 
         self.header_block
-            .into_encoding(encoder)
+            .into_encoding(encoder, false)
             .encode(&head, dst, |dst| {
                 dst.put_u32(promised_id.into());
             })
@@ -709,6 +735,12 @@ impl Iterator for Iter {
                 return Some(Method(method));
             }
 
+            if self.authority_first {
+                if let Some(authority) = pseudo.authority.take() {
+                    return Some(Authority(authority));
+                }
+            }
+
             if let Some(scheme) = pseudo.scheme.take() {
                 return Some(Scheme(scheme));
             }
@@ -771,6 +803,10 @@ impl HeadersFlag {
 
     pub fn is_priority(&self) -> bool {
         self.0 & PRIORITY == PRIORITY
+    }
+
+    pub fn set_priority(&mut self) {
+        self.0 |= PRIORITY;
     }
 }
 
@@ -977,11 +1013,16 @@ impl HeaderBlock {
         Ok(())
     }
 
-    fn into_encoding(self, encoder: &mut hpack::Encoder) -> EncodingHeaderBlock {
+    fn into_encoding(
+        self,
+        encoder: &mut hpack::Encoder,
+        authority_first: bool,
+    ) -> EncodingHeaderBlock {
         let mut hpack = BytesMut::new();
         let headers = Iter {
             pseudo: Some(self.pseudo),
             fields: self.fields.into_iter(),
+            authority_first,
         };
 
         encoder.encode(headers, &mut hpack);
@@ -1033,6 +1074,82 @@ mod test {
     use super::*;
     use crate::frame;
     use crate::hpack::{huffman, Encoder};
+
+    /// Encode the request HEADERS frame and return header names in wire order
+    fn encoded_header_order(headers: Headers) -> Vec<String> {
+        let mut encoder = Encoder::default();
+        let mut dst = BytesMut::new();
+        let continuation = headers.encode(
+            &mut encoder,
+            &mut (&mut dst).limit(frame::HEADER_LEN + 1024),
+        );
+        assert!(continuation.is_none());
+
+        let mut payload = dst.split_off(frame::HEADER_LEN);
+        let mut names = Vec::new();
+        hpack::Decoder::new(4096)
+            .decode(&mut Cursor::new(&mut payload), |h| {
+                names.push(String::from_utf8_lossy(h.name().as_slice()).into_owned())
+            })
+            .unwrap();
+        names
+    }
+
+    fn get_request_headers() -> Headers {
+        let pseudo = Pseudo::request(
+            Method::GET,
+            Uri::from_static("https://example.com/path"),
+            None,
+        );
+        let mut fields = HeaderMap::new();
+        fields.insert("user-agent", HeaderValue::from_static("test"));
+        let mut headers = Headers::new(StreamId::from(1), pseudo, fields);
+        headers.set_end_headers();
+        headers
+    }
+
+    #[test]
+    fn test_request_pseudo_headers_default_order() {
+        assert_eq!(
+            encoded_header_order(get_request_headers()),
+            [":method", ":scheme", ":authority", ":path", "user-agent"]
+        );
+    }
+
+    #[test]
+    fn test_request_pseudo_headers_authority_first_order() {
+        // Chrome sends :method, :authority, :scheme, :path
+        let mut headers = get_request_headers();
+        headers.set_pseudo_authority_first();
+        assert_eq!(
+            encoded_header_order(headers),
+            [":method", ":authority", ":scheme", ":path", "user-agent"]
+        );
+    }
+
+    #[test]
+    fn test_encode_headers_with_priority() {
+        let mut encoder = Encoder::default();
+        let mut dst = BytesMut::new();
+        let pseudo = Pseudo::request(Method::GET, Uri::from_static("https://example.com/"), None);
+        let mut headers = Headers::new(StreamId::from(1), pseudo, HeaderMap::new());
+        headers.set_end_headers();
+        headers.set_stream_dependency(StreamDependency::new(StreamId::zero(), 255, true));
+
+        let continuation = headers.encode(
+            &mut encoder,
+            &mut (&mut dst).limit(frame::HEADER_LEN + 1024),
+        );
+        assert!(continuation.is_none());
+
+        // frame header: length (3), type (1), flags (1), stream id (4)
+        assert_eq!(dst[3], 0x1, "HEADERS frame");
+        assert_eq!(dst[4] & PRIORITY, PRIORITY, "PRIORITY flag set");
+        // priority block right after the frame header: E bit + dependency 0, weight
+        assert_eq!(&dst[9..14], &[0x80, 0x00, 0x00, 0x00, 0xff]);
+        let payload_len = u32::from_be_bytes([0, dst[0], dst[1], dst[2]]) as usize;
+        assert_eq!(payload_len, dst.len() - frame::HEADER_LEN);
+    }
 
     #[test]
     fn test_nameless_header_at_resume() {

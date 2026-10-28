@@ -38,6 +38,12 @@ pub(super) struct Send {
 
     /// If extended connect protocol is enabled.
     is_extended_connect_protocol_enabled: bool,
+
+    /// Encode request pseudo headers as :method, :authority, :scheme, :path
+    request_pseudo_authority_first: bool,
+
+    /// Stream dependency to send in every request HEADERS frame
+    request_headers_priority: Option<frame::StreamDependency>,
 }
 
 /// A value to detect which public API has called `poll_reset`.
@@ -57,6 +63,18 @@ impl Send {
             prioritize: Prioritize::new(config),
             is_push_enabled: true,
             is_extended_connect_protocol_enabled: false,
+            request_pseudo_authority_first: config.request_pseudo_authority_first,
+            request_headers_priority: config.request_headers_priority,
+        }
+    }
+
+    /// Apply client options that shape the request HEADERS frame
+    pub fn apply_request_options(&self, headers: &mut frame::Headers) {
+        if self.request_pseudo_authority_first {
+            headers.set_pseudo_authority_first();
+        }
+        if let Some(dep) = self.request_headers_priority {
+            headers.set_stream_dependency(dep);
         }
     }
 
