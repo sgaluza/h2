@@ -1193,6 +1193,10 @@ impl Builder {
     /// `weight` (1 to 256, values out of range are clamped) and exclusive flag.
     /// Chrome sends an exclusive dependency on stream 0 with weight 256.
     ///
+    /// A stream can't depend on itself (RFC 9113 section 5.3.1), so the request
+    /// whose stream id equals `dependency_id` is sent without priority. Only
+    /// `dependency_id = 0` applies to every request.
+    ///
     /// By default no priority is sent.
     ///
     /// # Examples
