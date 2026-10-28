@@ -74,6 +74,11 @@ impl Send {
             headers.set_pseudo_authority_first();
         }
         if let Some(dep) = self.request_headers_priority {
+            // A stream depending on itself is a PROTOCOL_ERROR for the peer
+            // (RFC 9113 section 5.3.1), send that one request without priority
+            if dep.dependency_id() == headers.stream_id() {
+                return;
+            }
             headers.set_stream_dependency(dep);
         }
     }
