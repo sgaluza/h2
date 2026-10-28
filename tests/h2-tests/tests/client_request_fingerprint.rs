@@ -120,3 +120,15 @@ async fn headers_priority_skips_self_dependency() {
     assert_eq!(frames[1].flags & FLAG_PRIORITY, FLAG_PRIORITY);
     assert_eq!(frames[1].payload[..5], [0x80, 0x00, 0x00, 0x01, 0xff]);
 }
+
+#[tokio::test]
+async fn headers_priority_masks_reserved_bit() {
+    // Stream ids are 31-bit, the top bit of dependency_id is ignored instead of panicking
+    let mut builder = client::Builder::new();
+    builder.headers_priority(u32::MAX, 256, false);
+    let frame = capture_request_headers(builder).await;
+
+    assert_eq!(frame.flags & FLAG_PRIORITY, FLAG_PRIORITY);
+    // not exclusive, dependency 0x7fffffff
+    assert_eq!(frame.payload[..5], [0x7f, 0xff, 0xff, 0xff, 0xff]);
+}
