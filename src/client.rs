@@ -1197,6 +1197,9 @@ impl Builder {
     /// whose stream id equals `dependency_id` is sent without priority. Only
     /// `dependency_id = 0` applies to every request.
     ///
+    /// Stream ids are 31-bit: the most significant bit of `dependency_id` is
+    /// ignored, the exclusive flag is set by `exclusive` only.
+    ///
     /// By default no priority is sent.
     ///
     /// # Examples
@@ -1227,11 +1230,9 @@ impl Builder {
     ) -> &mut Self {
         // The weight is sent as weight - 1 to fit into one byte
         let weight = (weight.clamp(1, 256) - 1) as u8;
-        self.headers_priority = Some(StreamDependency::new(
-            StreamId::from(dependency_id),
-            weight,
-            exclusive,
-        ));
+        // StreamId::from asserts the reserved top bit is clear
+        let dependency_id = StreamId::from(dependency_id & !(1 << 31));
+        self.headers_priority = Some(StreamDependency::new(dependency_id, weight, exclusive));
         self
     }
 
