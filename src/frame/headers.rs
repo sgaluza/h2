@@ -1089,7 +1089,8 @@ mod test {
         let mut names = Vec::new();
         hpack::Decoder::new(4096)
             .decode(&mut Cursor::new(&mut payload), |h| {
-                names.push(String::from_utf8_lossy(h.name().as_slice()).into_owned())
+                names.push(String::from_utf8_lossy(h.name().as_slice()).into_owned());
+                std::ops::ControlFlow::Continue(())
             })
             .unwrap();
         names
