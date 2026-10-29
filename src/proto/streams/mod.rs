@@ -73,8 +73,8 @@ pub struct Config {
     /// When this gets exceeded, we issue GOAWAYs.
     pub local_max_error_reset_streams: Option<usize>,
 
-    /// Encode request pseudo headers as :method, :authority, :scheme, :path
-    pub request_pseudo_authority_first: bool,
+    /// Order of the request pseudo headers
+    pub request_pseudo_order: [frame::PseudoHeader; 4],
 
     /// Stream dependency to send in every request HEADERS frame
     pub request_headers_priority: Option<StreamDependency>,

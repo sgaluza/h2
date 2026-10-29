@@ -39,8 +39,8 @@ pub(super) struct Send {
     /// If extended connect protocol is enabled.
     is_extended_connect_protocol_enabled: bool,
 
-    /// Encode request pseudo headers as :method, :authority, :scheme, :path
-    request_pseudo_authority_first: bool,
+    /// Order of the request pseudo headers
+    request_pseudo_order: [frame::PseudoHeader; 4],
 
     /// Stream dependency to send in every request HEADERS frame
     request_headers_priority: Option<frame::StreamDependency>,
@@ -63,16 +63,14 @@ impl Send {
             prioritize: Prioritize::new(config),
             is_push_enabled: true,
             is_extended_connect_protocol_enabled: false,
-            request_pseudo_authority_first: config.request_pseudo_authority_first,
+            request_pseudo_order: config.request_pseudo_order,
             request_headers_priority: config.request_headers_priority,
         }
     }
 
     /// Apply client options that shape the request HEADERS frame
     pub fn apply_request_options(&self, headers: &mut frame::Headers) {
-        if self.request_pseudo_authority_first {
-            headers.set_pseudo_authority_first();
-        }
+        headers.set_pseudo_order(self.request_pseudo_order);
         if let Some(dep) = self.request_headers_priority {
             // A stream depending on itself is a PROTOCOL_ERROR for the peer
             // (RFC 9113 section 5.3.1), send that one request without priority

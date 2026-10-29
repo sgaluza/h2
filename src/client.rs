@@ -137,6 +137,7 @@
 
 use crate::codec::{Codec, SendError, UserError};
 use crate::ext::Protocol;
+pub use crate::frame::PseudoHeader;
 use crate::frame::{Headers, Pseudo, Reason, Settings, StreamDependency, StreamId};
 use crate::proto::{self, Error};
 use crate::{FlowControl, PingPong, RecvStream, SendStream};
@@ -344,8 +345,8 @@ pub struct Builder {
     /// When this gets exceeded, we issue GOAWAYs.
     local_max_error_reset_streams: Option<usize>,
 
-    /// Send request pseudo headers as :method, :authority, :scheme, :path.
-    pseudo_header_authority_first: bool,
+    /// Order of the request pseudo headers.
+    pseudo_header_order: [PseudoHeader; 4],
 
     /// Stream dependency sent with the PRIORITY flag in every request HEADERS frame.
     headers_priority: Option<StreamDependency>,
@@ -669,7 +670,7 @@ impl Builder {
             settings: Default::default(),
             stream_id: 1.into(),
             local_max_error_reset_streams: Some(proto::DEFAULT_LOCAL_RESET_COUNT_MAX),
-            pseudo_header_authority_first: false,
+            pseudo_header_order: crate::frame::DEFAULT_PSEUDO_ORDER,
             headers_priority: None,
         }
     }
@@ -1183,7 +1184,49 @@ impl Builder {
     /// # pub fn main() {}
     /// ```
     pub fn pseudo_header_authority_first(&mut self, enabled: bool) -> &mut Self {
-        self.pseudo_header_authority_first = enabled;
+        self.pseudo_header_order = if enabled {
+            [
+                PseudoHeader::Method,
+                PseudoHeader::Authority,
+                PseudoHeader::Scheme,
+                PseudoHeader::Path,
+            ]
+        } else {
+            crate::frame::DEFAULT_PSEUDO_ORDER
+        };
+        self
+    }
+
+    /// Sets the order of the request pseudo-headers in every HEADERS frame.
+    ///
+    /// The default is `:method`, `:scheme`, `:authority`, `:path`. Browsers
+    /// differ here: Chrome sends `:method`, `:authority`, `:scheme`, `:path`,
+    /// Firefox `:method`, `:path`, `:authority`, `:scheme`. A pseudo-header
+    /// repeated in `order` is sent once, one left out goes after the others in
+    /// the default order, `:protocol` (extended CONNECT) always goes last.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use tokio::io::{AsyncRead, AsyncWrite};
+    /// # use h2::client::*;
+    /// # use bytes::Bytes;
+    /// #
+    /// # async fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
+    /// # -> Result<((SendRequest<Bytes>, Connection<T, Bytes>)), h2::Error>
+    /// # {
+    /// use h2::client::PseudoHeader::*;
+    ///
+    /// let client_fut = Builder::new()
+    ///     .pseudo_header_order([Method, Path, Authority, Scheme])
+    ///     .handshake(my_io);
+    /// # client_fut.await
+    /// # }
+    /// #
+    /// # pub fn main() {}
+    /// ```
+    pub fn pseudo_header_order(&mut self, order: [PseudoHeader; 4]) -> &mut Self {
+        self.pseudo_header_order = order;
         self
     }
 
@@ -1426,7 +1469,7 @@ where
                 remote_reset_stream_max: builder.pending_accept_reset_stream_max,
                 local_error_reset_streams_max: builder.local_max_error_reset_streams,
                 settings: builder.settings,
-                request_pseudo_authority_first: builder.pseudo_header_authority_first,
+                request_pseudo_order: builder.pseudo_header_order,
                 request_headers_priority: builder.headers_priority,
             },
         );

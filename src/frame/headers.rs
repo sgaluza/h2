@@ -16,6 +16,27 @@ type EncodeBuf<'a> = bytes::buf::Limit<&'a mut BytesMut>;
 
 const MAX_HEADER_LIST_ABUSE_MULTIPLIER: usize = 4;
 
+/// A request pseudo-header, for ordering them in the HEADERS frame
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PseudoHeader {
+    /// `:method`
+    Method,
+    /// `:scheme`
+    Scheme,
+    /// `:authority`
+    Authority,
+    /// `:path`
+    Path,
+}
+
+/// The order h2 has always used: :method, :scheme, :authority, :path
+pub const DEFAULT_PSEUDO_ORDER: [PseudoHeader; 4] = [
+    PseudoHeader::Method,
+    PseudoHeader::Scheme,
+    PseudoHeader::Authority,
+    PseudoHeader::Path,
+];
+
 /// Header frame
 ///
 /// This could be either a request or a response.
@@ -33,8 +54,8 @@ pub struct Headers {
     /// The associated flags
     flags: HeadersFlag,
 
-    /// Encode :authority before :scheme (Chrome order), only affects sending
-    pseudo_authority_first: bool,
+    /// Order of the request pseudo-headers, only affects sending
+    pseudo_order: [PseudoHeader; 4],
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -88,8 +109,11 @@ pub struct Iter {
     /// Header fields
     fields: header::IntoIter<HeaderValue>,
 
-    /// Yield :authority before :scheme
-    authority_first: bool,
+    /// Order of :method, :scheme, :authority and :path
+    pseudo_order: [PseudoHeader; 4],
+
+    /// Position in `pseudo_order` to yield next
+    next_pseudo: usize,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -134,7 +158,7 @@ impl Headers {
                 pseudo,
             },
             flags: HeadersFlag::default(),
-            pseudo_authority_first: false,
+            pseudo_order: DEFAULT_PSEUDO_ORDER,
         }
     }
 
@@ -152,7 +176,7 @@ impl Headers {
                 pseudo: Pseudo::default(),
             },
             flags,
-            pseudo_authority_first: false,
+            pseudo_order: DEFAULT_PSEUDO_ORDER,
         }
     }
 
@@ -218,7 +242,7 @@ impl Headers {
                 pseudo: Pseudo::default(),
             },
             flags,
-            pseudo_authority_first: false,
+            pseudo_order: DEFAULT_PSEUDO_ORDER,
         };
 
         Ok((headers, src))
@@ -253,9 +277,9 @@ impl Headers {
         self.flags.set_end_stream()
     }
 
-    /// Encode request pseudo headers as :method, :authority, :scheme, :path
-    pub fn set_pseudo_authority_first(&mut self) {
-        self.pseudo_authority_first = true;
+    /// Encode the request pseudo headers in this order
+    pub fn set_pseudo_order(&mut self, order: [PseudoHeader; 4]) {
+        self.pseudo_order = order;
     }
 
     /// Send the stream dependency in this frame and set the PRIORITY flag
@@ -307,7 +331,7 @@ impl Headers {
         let stream_dep = self.stream_dep;
 
         self.header_block
-            .into_encoding(encoder, self.pseudo_authority_first)
+            .into_encoding(encoder, self.pseudo_order)
             .encode(&head, dst, |dst| {
                 // The priority block goes before the header block fragment
                 if let Some(dep) = stream_dep {
@@ -533,7 +557,7 @@ impl PushPromise {
         let promised_id = self.promised_id;
 
         self.header_block
-            .into_encoding(encoder, false)
+            .into_encoding(encoder, DEFAULT_PSEUDO_ORDER)
             .encode(&head, dst, |dst| {
                 dst.put_u32(promised_id.into());
             })
@@ -731,14 +755,22 @@ impl Iterator for Iter {
         use crate::hpack::Header::*;
 
         if let Some(ref mut pseudo) = self.pseudo {
-            if let Some(method) = pseudo.method.take() {
-                return Some(Method(method));
+            while let Some(&kind) = self.pseudo_order.get(self.next_pseudo) {
+                self.next_pseudo += 1;
+                let header = match kind {
+                    PseudoHeader::Method => pseudo.method.take().map(Method),
+                    PseudoHeader::Scheme => pseudo.scheme.take().map(Scheme),
+                    PseudoHeader::Authority => pseudo.authority.take().map(Authority),
+                    PseudoHeader::Path => pseudo.path.take().map(Path),
+                };
+                if header.is_some() {
+                    return header;
+                }
             }
 
-            if self.authority_first {
-                if let Some(authority) = pseudo.authority.take() {
-                    return Some(Authority(authority));
-                }
+            // pseudo headers left out of a custom order still go first
+            if let Some(method) = pseudo.method.take() {
+                return Some(Method(method));
             }
 
             if let Some(scheme) = pseudo.scheme.take() {
@@ -1016,13 +1048,14 @@ impl HeaderBlock {
     fn into_encoding(
         self,
         encoder: &mut hpack::Encoder,
-        authority_first: bool,
+        pseudo_order: [PseudoHeader; 4],
     ) -> EncodingHeaderBlock {
         let mut hpack = BytesMut::new();
         let headers = Iter {
             pseudo: Some(self.pseudo),
             fields: self.fields.into_iter(),
-            authority_first,
+            pseudo_order,
+            next_pseudo: 0,
         };
 
         encoder.encode(headers, &mut hpack);
@@ -1121,7 +1154,12 @@ mod test {
     fn test_request_pseudo_headers_authority_first_order() {
         // Chrome sends :method, :authority, :scheme, :path
         let mut headers = get_request_headers();
-        headers.set_pseudo_authority_first();
+        headers.set_pseudo_order([
+            PseudoHeader::Method,
+            PseudoHeader::Authority,
+            PseudoHeader::Scheme,
+            PseudoHeader::Path,
+        ]);
         assert_eq!(
             encoded_header_order(headers),
             [":method", ":authority", ":scheme", ":path", "user-agent"]
