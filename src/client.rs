@@ -137,7 +137,7 @@
 
 use crate::codec::{Codec, SendError, UserError};
 use crate::ext::Protocol;
-use crate::frame::{Headers, Pseudo, Reason, Settings, StreamId};
+use crate::frame::{Headers, Pseudo, Reason, Settings, StreamDependency, StreamId};
 use crate::proto::{self, Error};
 use crate::{FlowControl, PingPong, RecvStream, SendStream};
 
@@ -343,6 +343,12 @@ pub struct Builder {
     ///
     /// When this gets exceeded, we issue GOAWAYs.
     local_max_error_reset_streams: Option<usize>,
+
+    /// Send request pseudo headers as :method, :authority, :scheme, :path.
+    pseudo_header_authority_first: bool,
+
+    /// Stream dependency sent with the PRIORITY flag in every request HEADERS frame.
+    headers_priority: Option<StreamDependency>,
 }
 
 #[derive(Debug)]
@@ -663,6 +669,8 @@ impl Builder {
             settings: Default::default(),
             stream_id: 1.into(),
             local_max_error_reset_streams: Some(proto::DEFAULT_LOCAL_RESET_COUNT_MAX),
+            pseudo_header_authority_first: false,
+            headers_priority: None,
         }
     }
 
@@ -1145,6 +1153,89 @@ impl Builder {
         self
     }
 
+    /// Sets the order of request pseudo headers.
+    ///
+    /// When enabled, requests are sent with `:method, :authority, :scheme, :path`,
+    /// the order Chrome uses, instead of `:method, :scheme, :authority, :path`.
+    /// The order has no meaning for HTTP semantics, but it is visible in the
+    /// fingerprint of the client.
+    ///
+    /// The default value is `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use tokio::io::{AsyncRead, AsyncWrite};
+    /// # use h2::client::*;
+    /// # use bytes::Bytes;
+    /// #
+    /// # async fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
+    /// # -> Result<((SendRequest<Bytes>, Connection<T, Bytes>)), h2::Error>
+    /// # {
+    /// // `client_fut` is a future representing the completion of the HTTP/2
+    /// // handshake.
+    /// let client_fut = Builder::new()
+    ///     .pseudo_header_authority_first(true)
+    ///     .handshake(my_io);
+    /// # client_fut.await
+    /// # }
+    /// #
+    /// # pub fn main() {}
+    /// ```
+    pub fn pseudo_header_authority_first(&mut self, enabled: bool) -> &mut Self {
+        self.pseudo_header_authority_first = enabled;
+        self
+    }
+
+    /// Sends a stream dependency in every request HEADERS frame.
+    ///
+    /// The HEADERS frame gets the PRIORITY flag with the given stream dependency,
+    /// `weight` (1 to 256, values out of range are clamped) and exclusive flag.
+    /// Chrome sends an exclusive dependency on stream 0 with weight 256.
+    ///
+    /// A stream can't depend on itself (RFC 9113 section 5.3.1), so the request
+    /// whose stream id equals `dependency_id` is sent without priority. Only
+    /// `dependency_id = 0` applies to every request.
+    ///
+    /// Stream ids are 31-bit: the most significant bit of `dependency_id` is
+    /// ignored, the exclusive flag is set by `exclusive` only.
+    ///
+    /// By default no priority is sent.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use tokio::io::{AsyncRead, AsyncWrite};
+    /// # use h2::client::*;
+    /// # use bytes::Bytes;
+    /// #
+    /// # async fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
+    /// # -> Result<((SendRequest<Bytes>, Connection<T, Bytes>)), h2::Error>
+    /// # {
+    /// // `client_fut` is a future representing the completion of the HTTP/2
+    /// // handshake.
+    /// let client_fut = Builder::new()
+    ///     .headers_priority(0, 256, true)
+    ///     .handshake(my_io);
+    /// # client_fut.await
+    /// # }
+    /// #
+    /// # pub fn main() {}
+    /// ```
+    pub fn headers_priority(
+        &mut self,
+        dependency_id: u32,
+        weight: u16,
+        exclusive: bool,
+    ) -> &mut Self {
+        // The weight is sent as weight - 1 to fit into one byte
+        let weight = (weight.clamp(1, 256) - 1) as u8;
+        // StreamId::from asserts the reserved top bit is clear
+        let dependency_id = StreamId::from(dependency_id & !(1 << 31));
+        self.headers_priority = Some(StreamDependency::new(dependency_id, weight, exclusive));
+        self
+    }
+
     /// Sets the first stream ID to something other than 1.
     #[cfg(feature = "unstable")]
     pub fn initial_stream_id(&mut self, stream_id: u32) -> &mut Self {
@@ -1335,6 +1426,8 @@ where
                 remote_reset_stream_max: builder.pending_accept_reset_stream_max,
                 local_error_reset_streams_max: builder.local_max_error_reset_streams,
                 settings: builder.settings,
+                request_pseudo_authority_first: builder.pseudo_header_authority_first,
+                request_headers_priority: builder.headers_priority,
             },
         );
         let send_request = SendRequest {

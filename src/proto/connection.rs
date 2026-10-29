@@ -83,6 +83,8 @@ pub(crate) struct Config {
     pub remote_reset_stream_max: usize,
     pub local_error_reset_streams_max: Option<usize>,
     pub settings: frame::Settings,
+    pub request_pseudo_authority_first: bool,
+    pub request_headers_priority: Option<frame::StreamDependency>,
 }
 
 #[derive(Debug)]
@@ -123,6 +125,8 @@ where
                     .max_concurrent_streams()
                     .map(|max| max as usize),
                 local_max_error_reset_streams: config.local_error_reset_streams_max,
+                request_pseudo_authority_first: config.request_pseudo_authority_first,
+                request_headers_priority: config.request_headers_priority,
             }
         }
         let streams = Streams::new(streams_config(&config));
