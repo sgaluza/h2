@@ -1202,8 +1202,9 @@ impl Builder {
     /// The default is `:method`, `:scheme`, `:authority`, `:path`. Browsers
     /// differ here: Chrome sends `:method`, `:authority`, `:scheme`, `:path`,
     /// Firefox `:method`, `:path`, `:authority`, `:scheme`. A pseudo-header
-    /// repeated in `order` is sent once, one left out goes after the others in
-    /// the default order, `:protocol` (extended CONNECT) always goes last.
+    /// repeated in `order` is sent once, the ones left out of `order` go after
+    /// the others in the default order, `:protocol` (extended CONNECT) always
+    /// goes last.
     ///
     /// # Examples
     ///

@@ -18,6 +18,7 @@ const MAX_HEADER_LIST_ABUSE_MULTIPLIER: usize = 4;
 
 /// A request pseudo-header, for ordering them in the HEADERS frame
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PseudoHeader {
     /// `:method`
     Method,
@@ -1163,6 +1164,44 @@ mod test {
         assert_eq!(
             encoded_header_order(headers),
             [":method", ":authority", ":scheme", ":path", "user-agent"]
+        );
+    }
+
+    #[test]
+    fn test_request_pseudo_order_keeps_protocol_last() {
+        // extended CONNECT (RFC 8441): :protocol after the ordered pseudo headers
+        let pseudo = Pseudo::request(
+            Method::CONNECT,
+            Uri::from_static("https://example.com/chat"),
+            Some(Protocol::from("websocket")),
+        );
+        let mut headers = Headers::new(StreamId::from(1), pseudo, HeaderMap::new());
+        headers.set_end_headers();
+        headers.set_pseudo_order([
+            PseudoHeader::Method,
+            PseudoHeader::Path,
+            PseudoHeader::Authority,
+            PseudoHeader::Scheme,
+        ]);
+        assert_eq!(
+            encoded_header_order(headers),
+            [":method", ":path", ":authority", ":scheme", ":protocol"]
+        );
+    }
+
+    #[test]
+    fn test_request_pseudo_order_with_repeats_and_gaps() {
+        // a repeat is sent once, the left out ones follow in the default order
+        let mut headers = get_request_headers();
+        headers.set_pseudo_order([
+            PseudoHeader::Path,
+            PseudoHeader::Path,
+            PseudoHeader::Path,
+            PseudoHeader::Path,
+        ]);
+        assert_eq!(
+            encoded_header_order(headers),
+            [":path", ":method", ":scheme", ":authority", "user-agent"]
         );
     }
 

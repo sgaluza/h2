@@ -25,7 +25,7 @@ use self::state::State;
 use self::store::Store;
 use self::stream::Stream;
 
-use crate::frame::{StreamDependency, StreamId, StreamIdOverflow};
+use crate::frame::{PseudoHeader, StreamDependency, StreamId, StreamIdOverflow};
 use crate::proto::*;
 
 use bytes::Bytes;
@@ -74,7 +74,7 @@ pub struct Config {
     pub local_max_error_reset_streams: Option<usize>,
 
     /// Order of the request pseudo headers
-    pub request_pseudo_order: [frame::PseudoHeader; 4],
+    pub request_pseudo_order: [PseudoHeader; 4],
 
     /// Stream dependency to send in every request HEADERS frame
     pub request_headers_priority: Option<StreamDependency>,
