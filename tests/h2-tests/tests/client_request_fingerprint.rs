@@ -1,5 +1,7 @@
-//! Client options that shape the request HEADERS frame like Chrome does:
-//! pseudo-header order (:method, :authority, :scheme, :path) and PRIORITY.
+//! Client options that shape the request HEADERS frame like a browser does:
+//! pseudo-header order (any order with `pseudo_header_order`, as Chrome, Firefox
+//! or Safari send it; `pseudo_header_authority_first` is the Chrome shortcut) and
+//! PRIORITY.
 
 use h2_support::prelude::*;
 use tokio::io::{AsyncReadExt, DuplexStream};
@@ -119,6 +121,103 @@ async fn headers_priority_skips_self_dependency() {
     );
     assert_eq!(frames[1].flags & FLAG_PRIORITY, FLAG_PRIORITY);
     assert_eq!(frames[1].payload[..5], [0x80, 0x00, 0x00, 0x01, 0xff]);
+}
+
+/// HPACK integer with an N-bit prefix (RFC 7541 section 5.1): value and bytes used
+fn hpack_int(buf: &[u8], prefix_bits: u8) -> (usize, usize) {
+    let mask = (1usize << prefix_bits) - 1;
+    let mut value = buf[0] as usize & mask;
+    if value < mask {
+        return (value, 1);
+    }
+    let mut shift = 0;
+    let mut used = 1;
+    loop {
+        let b = buf[used];
+        used += 1;
+        value += ((b & 0x7f) as usize) << shift;
+        shift += 7;
+        if b & 0x80 == 0 {
+            return (value, used);
+        }
+    }
+}
+
+/// First letters of the pseudo-header names of a header block without
+/// PRIORITY, by static table index; stops at the first regular header
+fn pseudo_order(mut block: &[u8]) -> String {
+    let mut order = String::new();
+    while !block.is_empty() {
+        let (index, used) = if block[0] & 0x80 != 0 {
+            hpack_int(block, 7)
+        } else {
+            // literal with indexed name: 6-bit prefix if incremental, 4-bit otherwise
+            let prefix = if block[0] & 0x40 != 0 { 6 } else { 4 };
+            let (i, n) = hpack_int(block, prefix);
+            let (len, m) = hpack_int(&block[n..], 7);
+            (i, n + m + len)
+        };
+        let name = match index {
+            1 => 'a',
+            2 | 3 => 'm',
+            4 | 5 => 'p',
+            6 | 7 => 's',
+            _ => break,
+        };
+        order.push(name);
+        block = &block[used..];
+    }
+    order
+}
+
+#[tokio::test]
+async fn pseudo_order_helper_reads_default_order() {
+    let frame = capture_request_headers(client::Builder::new()).await;
+    assert_eq!(pseudo_order(&frame.payload), "msap");
+}
+
+#[tokio::test]
+async fn pseudo_header_authority_first_is_chrome_order() {
+    let mut builder = client::Builder::new();
+    builder.pseudo_header_authority_first(true);
+    let frame = capture_request_headers(builder).await;
+
+    assert_eq!(pseudo_order(&frame.payload), "masp");
+}
+
+#[tokio::test]
+async fn pseudo_header_order_like_firefox() {
+    use h2::client::PseudoHeader::*;
+
+    let mut builder = client::Builder::new();
+    builder.pseudo_header_order([Method, Path, Authority, Scheme]);
+    let frame = capture_request_headers(builder).await;
+
+    assert_eq!(pseudo_order(&frame.payload), "mpas");
+}
+
+#[tokio::test]
+async fn pseudo_header_order_like_safari() {
+    use h2::client::PseudoHeader::*;
+
+    let mut builder = client::Builder::new();
+    builder.pseudo_header_order([Method, Scheme, Path, Authority]);
+    let frame = capture_request_headers(builder).await;
+
+    assert_eq!(pseudo_order(&frame.payload), "mspa");
+}
+
+#[tokio::test]
+async fn pseudo_header_order_like_chrome_with_priority() {
+    use h2::client::PseudoHeader::*;
+
+    let mut builder = client::Builder::new();
+    builder.pseudo_header_order([Method, Authority, Scheme, Path]);
+    builder.headers_priority(0, 256, true);
+    let frame = capture_request_headers(builder).await;
+
+    assert_eq!(frame.flags & FLAG_PRIORITY, FLAG_PRIORITY);
+    assert_eq!(pseudo_order(&frame.payload[5..]), "masp");
 }
 
 #[tokio::test]
