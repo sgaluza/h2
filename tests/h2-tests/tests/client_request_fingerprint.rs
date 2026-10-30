@@ -1,5 +1,7 @@
-//! Client options that shape the request HEADERS frame like Chrome does:
-//! pseudo-header order (:method, :authority, :scheme, :path) and PRIORITY.
+//! Client options that shape the request HEADERS frame like a browser does:
+//! pseudo-header order (any order with `pseudo_header_order`, as Chrome, Firefox
+//! or Safari send it; `pseudo_header_authority_first` is the Chrome shortcut) and
+//! PRIORITY.
 
 use h2_support::prelude::*;
 use tokio::io::{AsyncReadExt, DuplexStream};
